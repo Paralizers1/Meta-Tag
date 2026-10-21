@@ -1,5 +1,5 @@
 /*
- * meta-tag-hub.js
+ * meta-tag-hub.js  (versione 20261021b)
  * ----------------------------------------------------------------------------
  * Script della pagina "hub" (meta-tag.html). Fa due cose:
  *   1) reindirizza i vecchi link con #ancora (es. meta-tag.html#charset)
@@ -54,7 +54,6 @@
       out = $('out'),      // contenitore dei risultati
       cnt = $('cnt'),      // contatore visibile ("8 schede trovate")
       none = $('none'),    // messaggio "Nessun risultato"
-      more = $('more'),    // pulsante "Mostra altri risultati"
       rs = $('rs'),        // pulsante "Azzera"
       live = $('live'),    // area aria-live per i lettori di schermo
       up = $('up');        // pulsante "Torna su"
@@ -64,9 +63,11 @@
   // Etichette leggibili per i codici di stato usati nei dati.
   var STL = { ok: 'Attivo', old: 'Obsoleto', ign: 'Ignorato', dead: 'Dismesso' };
 
-  var PAGE = 40,      // quanti risultati mostrare per volta
-      shown = 0,      // quanti ne abbiamo già disegnati
-      results = [];   // risultati dell'ultima ricerca, già ordinati
+  // Peso di ogni stato nell'ordine dei risultati: gli attivi vengono prima degli
+  // obsoleti, poi gli ignorati e per ultimi i dismessi (+50 se il tag è ⭐ essenziale).
+  var W = { ok: 30, old: 20, ign: 10, dead: 0 };
+
+  var results = [];   // risultati dell'ultima ricerca, già ordinati
 
   // Normalizza il testo per confrontarlo: minuscolo e senza accenti,
   // così "àpple" trova "apple" e viceversa.
@@ -77,49 +78,51 @@
   // Precalcoliamo una sola volta, per ogni scheda, il nome normalizzato e
   // un "pagliaio" di testo (nome + contenuto + nota + categoria) su cui cercare.
   var pre = ITEMS.map(function (r) {
-    return { r: r, name: norm(r[1]), hay: norm([r[1], r[5], r[6], META.cats[r[3]][0]].join(' ')) };
+    return { r: r, name: norm(r[1]), note: norm(r[6]), hay: norm([r[1], r[5], r[6], META.cats[r[3]][0]].join(' ')) };
   });
 
   // Esegue la ricerca in base a testo e stato scelti, poi disegna i risultati.
-  function run() {
+  // Senza testo e con "Tutti gli stati" mostra tutti i tag, in ordine di priorità:
+  // essenziali, attivi, obsoleti, ignorati, dismessi. "silent" evita l'annuncio
+  // per gli screen reader alla prima visualizzazione.
+  function run(silent) {
     var terms = norm(q.value).split(/\s+/).filter(Boolean), st = hf.value;
-    var active = terms.length || st;   // c'è almeno un filtro attivo?
-    rs.hidden = !active;
-
-    // Nessun filtro: svuotiamo tutto e torniamo allo stato iniziale.
-    if (!active) {
-      out.hidden = true; out.textContent = '';
-      none.hidden = true; more.hidden = true; cnt.textContent = '';
-      return;
-    }
+    var filtered = terms.length || st;   // c'è almeno un filtro attivo?
+    rs.hidden = !filtered;               // "Azzera" serve solo se c'è qualcosa da azzerare
 
     results = [];
     pre.forEach(function (p) {
-      if (st && p.r[2] !== st) return;           // scartiamo gli stati diversi
-      var score = 0;
+      // Filtro per stato: "ess" = solo i tag ⭐ essenziali, altrimenti il codice dello stato.
+      if (st === 'ess' ? !p.r[4] : (st && p.r[2] !== st)) return;
+
+      // Punteggio di partenza = priorità (essenziale + stato).
+      var score = (p.r[4] ? 50 : 0) + W[p.r[2]];
+
       for (var i = 0; i < terms.length; i++) {
         var t = terms[i];
-        if (p.hay.indexOf(t) < 0) return;        // ogni parola deve comparire (AND)
-        // Punteggio di rilevanza: meglio una corrispondenza sul nome del tag.
-        if (p.name === t) score += 100;          // nome identico
-        else if (p.name.indexOf(t) === 0) score += 60;   // il nome inizia così
-        else if (p.name.indexOf(t) > -1) score += 40;    // il nome contiene la parola
-        else score += 5;                         // trovata solo nel testo
+        if (p.hay.indexOf(t) < 0) return;               // ogni parola deve comparire (AND)
+        // Rilevanza del testo cercato: pesa di più una corrispondenza sul nome del tag.
+        if (p.name === t) score += 1000;                // nome identico
+        else if (p.name.indexOf(t) === 0) score += 800; // il nome inizia così
+        else if (p.name.indexOf(t) > -1) score += 600;  // il nome contiene la parola
+        else if (p.note.indexOf(t) > -1) score += 300;  // trovata nella nota breve
+        else score += 100;                              // trovata altrove nella scheda
       }
-      if (p.r[4]) score += 3;                    // piccolo bonus per i tag ⭐ essenziali
       results.push({ r: p.r, s: score });
     });
 
     // Ordine: punteggio decrescente, a parità ordine alfabetico per nome.
     results.sort(function (a, b) { return b.s - a.s || a.r[1].localeCompare(b.r[1]); });
 
-    shown = 0; out.textContent = ''; out.hidden = false;
+    out.textContent = ''; out.hidden = false;
     render();
 
-    // Aggiorniamo contatore e annuncio per gli screen reader.
-    var msg = results.length + (results.length === 1 ? ' scheda trovata' : ' schede trovate');
-    cnt.textContent = msg; live.textContent = msg;
-    none.hidden = results.length > 0;
+    // Contatore e annuncio per gli screen reader.
+    var n = results.length;
+    var msg = n + (n === 1 ? ' scheda' : ' schede') + (filtered ? (n === 1 ? ' trovata' : ' trovate') : '');
+    cnt.textContent = msg;
+    if (!silent) live.textContent = msg;
+    none.hidden = n > 0;
   }
 
   // Crea un elemento con classe e testo opzionali.
@@ -131,11 +134,10 @@
     return e;
   }
 
-  // Disegna la prossima "pagina" di risultati (PAGE schede alla volta).
+  // Disegna tutti i risultati (sono al massimo 242 schede compatte, quindi niente paginazione).
   function render() {
-    var end = Math.min(shown + PAGE, results.length);
-    for (; shown < end; shown++) {
-      var r = results[shown].r;
+    for (var k = 0; k < results.length; k++) {
+      var r = results[k].r;
       var href = META.cats[r[3]][1] + '#' + r[0];   // pagina di categoria + ancora della scheda
 
       // Scheda compatta: stesse classi della pagina completa, così usa lo stesso CSS.
@@ -169,8 +171,6 @@
 
       out.appendChild(a);
     }
-    // Il pulsante "Mostra altri" compare solo se restano risultati da mostrare.
-    more.hidden = shown >= results.length;
   }
 
   /* ---- Eventi ---- */
@@ -179,8 +179,7 @@
   // per non rifare la ricerca a ogni singola lettera digitata.
   var t;
   q.addEventListener('input', function () { clearTimeout(t); t = setTimeout(run, 120); });
-  hf.addEventListener('change', run);
-  more.addEventListener('click', render);
+  hf.addEventListener('change', function () { run(); });
 
   // "Azzera": svuota testo e filtro, aggiorna i pulsanti e rimette il focus sul campo.
   rs.addEventListener('click', function () {
@@ -277,10 +276,21 @@
   }
 
   // Prova prima fetch; se fallisce (es. file://) passa all'iframe.
+  // Se falliscono entrambi, l'errore riporta il motivo di ciascun tentativo
+  // (utile per capire cosa non va: lo mostriamo nel messaggio e in console).
   function getDetails(page, id) {
+    var why = [];
     var viaFetch;
     try { viaFetch = detailsByFetch(page, id); } catch (x) { viaFetch = Promise.reject(x); }
-    return viaFetch.catch(function () { return detailsByFrame(page, id); });
+    return viaFetch.catch(function (e) {
+      why.push('fetch: ' + (e && e.message || e));
+      return detailsByFrame(page, id);
+    }).catch(function (e) {
+      why.push('iframe: ' + (e && e.message || e));
+      var err = new Error(why.join(' | '));
+      err.why = err.message;
+      throw err;
+    });
   }
 
   // Riempie il riquadro "det" con i dettagli della scheda corrispondente.
@@ -294,14 +304,18 @@
     getDetails(page, id).then(function (nodes) {
       det.removeChild(wait);
       nodes.forEach(function (n) { det.appendChild(n); });
-    }).catch(function () {
-      // Se entrambi i percorsi falliscono offriamo il link alla pagina di categoria.
+    }).catch(function (err) {
+      // Se entrambi i percorsi falliscono offriamo il link alla pagina di categoria
+      // e riportiamo il motivo (anche in console) per facilitare la diagnosi.
+      if (window.console) console.warn('Dettagli non caricati [hub 20261021b]:', page, id, err && err.why);
       det.removeChild(wait);
       det.removeAttribute('data-loaded');
       var p = el('p', 'e', 'Impossibile caricare i dettagli qui. ');
       var l = el('a', null, 'Apri la scheda completa');
       l.href = page + '#' + id;
-      p.appendChild(l); det.appendChild(p);
+      p.appendChild(l);
+      p.appendChild(el('small', null, ' (hub 20261021b - ' + (err && err.why || 'errore sconosciuto') + ')'));
+      det.appendChild(p);
     });
   }
 
@@ -371,7 +385,10 @@
   /* ---- Parametro ?q=parola ---- */
   // Permette di aprire l'hub con la ricerca già compilata (es. meta-tag.html?q=robots).
   var m = /[?&]q=([^&]*)/.exec(location.search);
-  if (m) { q.value = decodeURIComponent(m[1].replace(/\+/g, ' ')); run(); }
+  if (m) q.value = decodeURIComponent(m[1].replace(/\+/g, ' '));
+
+  // Prima visualizzazione: mostra subito tutti i tag (o quelli del ?q=) in ordine di priorità.
+  run(true);
 
   /* ---- Menu "Indice: Vai a…" ---- */
   // Si costruisce dai link dell'indice per categoria (nav.toc), mantenendo i due
